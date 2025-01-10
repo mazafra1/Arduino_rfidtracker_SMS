@@ -24,7 +24,7 @@ SoftwareSerial mySIM800(2, 3); //SIM800C TX & RX is connected to Arduino #2 & #3
 void sendSMS(String textString){
   mySIM800.println("AT+CMGF=1"); // Configuring TEXT mode
   updateSerial();
-  mySIM800.println("AT+CMGS=\"+34666111222\"");//change ZZ with country code and xxxxxxxxxxx with phone number to sms
+  mySIM800.println("AT+CMGS=\"+ZZxxxxxxxxx\"");//change ZZ with country code and xxxxxxxxxxx with phone number to sms
   updateSerial();
   mySIM800.print(textString); //text content
   updateSerial();
