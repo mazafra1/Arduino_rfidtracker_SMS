@@ -1,44 +1,32 @@
 #include <SPI.h>
 #include <MFRC522.h>
 #include <Wire.h>
-#include <LiquidCrystal_I2C.h>
 #include <SoftwareSerial.h>
-/**********************************************************/
-LiquidCrystal_I2C lcd(0x27, 16, 2); // set the LCD address to 0x27 for a 16 chars and 2 line display
-/*********************************************************/
+
 SoftwareSerial mySIM800(2, 3); //SIM800 TX & RX is connected to Arduino #2 & #3
 
 #define BUTTON_PIN 8
-#define REDPIN 7
-#define GREENPIN 6
 
 #define RST_PIN	9    //Pin 9 para el reset del RC522
 #define SS_PIN	10   //Pin 10 para el SS (SDA) del RC522
 MFRC522 mfrc522(SS_PIN, RST_PIN); //Creamos el objeto para el RC522
 
 byte ActualUID[4]; //almacenará el código del Tag leído
-byte Atleta1[4]= {0x73, 0x1D, 0xF2, 0xF6}; //código del atleta 1
-byte Atleta2[4]= {0x63, 0x8B, 0x67, 0xEE}; //código del atleta 2
+const byte Atleta1[4]= {0x73, 0x1D, 0xF2, 0xF6}; //código del atleta 1
+const byte Atleta2[4]= {0x63, 0x8B, 0x67, 0xEE}; //código del atleta 2
 
-const int RETRY = 1; // Number of times to retry when a SMS is not successful
+const int MAX_RETRIES = 2; // Number of times to retry when a SMS is not successful
 const String DST_PHONE = "+ZZxxxxxxxxx"; //Use +ZZ with country code and xxxxxxxxxxx with phone number to sms
 const int LAP_LENGTH = 400; // Use 0 for unknown lap distance.
+
 unsigned long LastStateChangeTime = 0;
 unsigned long startTime = 0;
 bool isStartTimeSet = false;
 unsigned long totalDistance = 0;
 bool isNetworkOK = false;
 
-//Función para comparar dos vectores
- boolean compareArray(byte array1[],byte array2[])
-{
-  if(array1[0] != array2[0])return(false);
-  if(array1[1] != array2[1])return(false);
-  if(array1[2] != array2[2])return(false);
-  if(array1[3] != array2[3])return(false);
-  return(true);
-}
-
+// It prints out in the USB serial monitor 
+// everything sent or received into the SIM800 serial
 void updateSerial()
 {
   delay(500);
@@ -79,6 +67,54 @@ bool isNetworkRegistered() {
   return (status == "1" || status == "5");
 }
 
+String getNetworktime(){
+  String extractedTime = "";
+  String simResponse = "";
+
+  if (!isNetworkOK){
+    return "00:00:00";
+  }
+
+  mySIM800.println("AT+CCLK?"); //Check whether it has registered in the network
+  delay(500);
+  if (mySIM800.available())
+  {
+    simResponse = mySIM800.readString(); // Read the response
+    // Filter out echoed AT command
+    if (simResponse.startsWith("AT")) {
+      simResponse = simResponse.substring(simResponse.indexOf('+CCLK: ') + 1); // Skip the first line (echoed command)
+    }
+  }
+
+  // Find the comma after the date
+  int commaIndex = simResponse.indexOf(','); 
+  if (commaIndex != -1) {
+    // Extract the time part, which starts after the comma
+    int timeEndIndex = simResponse.indexOf('+', commaIndex); // Locate where the timezone starts
+    if (timeEndIndex == -1) {
+      timeEndIndex = simResponse.length(); // Default to end of string if no timezone
+    }
+    extractedTime = simResponse.substring(commaIndex + 1, timeEndIndex); // Extract time
+  }
+  
+  return extractedTime;
+}
+
+bool InitializeSIM800(){
+  mySIM800.println("AT"); //Once the handshake test is successful, it will back to OK
+  updateSerial();
+  mySIM800.println("AT+CSQ"); //Signal quality test, value range is 0-31 , 31 is the best
+  updateSerial();
+  // mySIM800.println("AT+CCID"); //Read SIM information to confirm whether the SIM is plugged
+  // updateSerial();
+  // mySIM800.println("AT+CREG?"); //Check whether it has registered in the network
+  // updateSerial();
+  // mySIM800.println("AT+CCLK?"); //Check network time
+  // updateSerial();
+
+  return isNetworkRegistered();
+}
+
 //Escribe la distancia total recorrida
 String getDistance(unsigned long distanceInMeters) {
   unsigned long kilometers = distanceInMeters / 1000;
@@ -91,7 +127,7 @@ String getDistance(unsigned long distanceInMeters) {
   // Serial.print(",");
   // Serial.print(meters);
   // Serial.println(" km");
-  String res = "DISTANCIA TOTAL: " + String(kilometers) + "," + String(meters) + " km";
+  String res = "DIST. TOTAL: " + String(kilometers) + "," + String(meters) + " km";
 
   return res;
 }
@@ -126,54 +162,7 @@ String getLapPace(unsigned long msec){
   return res;
 }
 
-// Linea is 0 or 1. Cursor is between 0 and 15.
-void printLCD(int linea, int cursor, String texto){
-  lcd.setCursor(cursor, linea); // set the cursor to column 3, line 0
-  lcd.print(texto);  // Print a message to the LCD
-}
-
-String getNetworktime(){
-  String extractedTime = "";
-  String simResponse = "";
-
-  if (!isNetworkOK){
-    return "00:00:00";
-  }
-
-  mySIM800.println("AT+CCLK?"); //Check whether it has registered in the network
-  delay(500);
-  if (mySIM800.available())
-  {
-    simResponse = mySIM800.readString(); // Read the response
-    // Filter out echoed AT command
-    if (simResponse.startsWith("AT")) {
-      simResponse = simResponse.substring(simResponse.indexOf('+CCLK: ') + 1); // Skip the first line (echoed command)
-    }
-  }
-
-  // Find the comma after the date
-  int commaIndex = simResponse.indexOf(','); 
-  if (commaIndex != -1) {
-    // Extract the time part, which starts after the comma
-    int timeEndIndex = simResponse.indexOf('+', commaIndex); // Locate where the timezone starts
-    if (timeEndIndex == -1) {
-      timeEndIndex = simResponse.length(); // Default to end of string if no timezone
-    }
-    extractedTime = simResponse.substring(commaIndex + 1, timeEndIndex); // Extract time
-  }
-  
-  return extractedTime;
-}
-
-// Function to force network registration
-void forceNetworkRegistration() {
-  Serial.println("Intentando registrar en red GSM...");
-  mySIM800.println("AT+COPS=0"); // Automatically select operator
-  // updateSerial();
-  delay(1000);                  // Wait for network registration attempt
-}
-
-String printLaptimeAndTotaltime()
+String getLaptimeAndTotaltime(bool includeLapInfo)
 {  
   String sTextoCompleto = "";
   if (!isStartTimeSet) {
@@ -186,32 +175,36 @@ String printLaptimeAndTotaltime()
   unsigned long hours = lapTime / 3600000;
   unsigned long minutes = (lapTime % 3600000) / 60000;
   unsigned long seconds = (lapTime % 60000) / 1000;
-  String sTiempoVuelta = "Tiempo Vuelta: ";  
-  // Serial.print("  T vuelta: ");
-  // Serial.print(hours);
-  // Serial.print(":");
-  // if (minutes < 10) res = res + "0"; //Serial.print("0");
-  sTiempoVuelta = sTiempoVuelta + minutes;
-  // Serial.print(minutes);
-  // Serial.print("m");
-  sTiempoVuelta = sTiempoVuelta + "m";
-  if (seconds < 10) sTiempoVuelta = sTiempoVuelta + "0";// Serial.print("0");
-  // Serial.print(seconds);
-  sTiempoVuelta = sTiempoVuelta + seconds;
-  // Serial.print("s. ");
-  sTiempoVuelta = sTiempoVuelta + "s";
+  String sTiempoVuelta = "";
+  if (includeLapInfo) {
+    sTiempoVuelta = "Tiempo Vuelta: ";
+    // Serial.print("  T vuelta: ");
+    // Serial.print(hours);
+    // Serial.print(":");
+    // if (minutes < 10) res = res + "0"; //Serial.print("0");
+    sTiempoVuelta = sTiempoVuelta + minutes;
+    // Serial.print(minutes);
+    // Serial.print("m");
+    sTiempoVuelta = sTiempoVuelta + "m";
+    if (seconds < 10) sTiempoVuelta = sTiempoVuelta + "0";// Serial.print("0");
+    // Serial.print(seconds);
+    sTiempoVuelta = sTiempoVuelta + seconds;
+    // Serial.print("s. ");
+    sTiempoVuelta = sTiempoVuelta + "s";
 
-  String ritmoVuelta = getLapPace(lapTime);
-  // lcd.clear();
-  // printLCD(0,0,sTiempoVuelta);
-  // printLCD(1,0,ritmoVuelta);
-  // delay(2000);
-  
-  Serial.print(sTiempoVuelta);
-  Serial.print(". ");
-  Serial.println(ritmoVuelta);
-  sTextoCompleto = sTiempoVuelta + "\n" + ritmoVuelta + "\n";  
+    String ritmoVuelta = getLapPace(lapTime);
+    // lcd.clear();
+    // printLCD(0,0,sTiempoVuelta);
+    // printLCD(1,0,ritmoVuelta);
+    // delay(2000);
+    
+    Serial.print(sTiempoVuelta);
+    Serial.print(". ");
+    Serial.println(ritmoVuelta);
+    sTextoCompleto = sTiempoVuelta + "\n" + ritmoVuelta + "\n";
+  }
 
+  //TOTAL STATISTICS
   unsigned long totalTime = currentTime - startTime;
   hours = totalTime / 3600000;
   minutes = (totalTime % 3600000) / 60000;
@@ -233,12 +226,13 @@ String printLaptimeAndTotaltime()
   // Serial.print(seconds);
   // Serial.print("s. ");
   sTiempoTotal = sTiempoTotal + seconds + "s";
-  lcd.clear();
-  printLCD(0,0,sTiempoTotal);
+
+  // lcd.clear();
+  // printLCD(0,0,sTiempoTotal);  
   Serial.print(sTiempoTotal);
   
   String sDistanciaTotal = getDistance(totalDistance);
-  printLCD(1,0,sDistanciaTotal);
+  // printLCD(1,0,sDistanciaTotal);
   Serial.print(". ");
   Serial.println(sDistanciaTotal);
   sTextoCompleto = sTextoCompleto + sTiempoTotal + "\n" + sDistanciaTotal;
@@ -257,7 +251,14 @@ bool sendSMS(String textString){
   bool enviado = false;
   int i = 0;
 
-  while (i<RETRY and !enviado) {
+  while (i<MAX_RETRIES and !enviado) {
+    if (i>0){
+      Serial.println("Esperamos 4s antes del reintento.");
+      delay(4000);
+      // Retry sending SMS
+      Serial.println("Reintentando SMS...");
+    }
+
     mySIM800.println("AT+CMGF=1"); // Configuring TEXT mode
     updateSerial();
     mySIM800.print("AT+CMGS=\"");
@@ -268,9 +269,10 @@ bool sendSMS(String textString){
     mySIM800.print(textString); //text content
     updateSerial();
 
-    mySIM800.write(26);
+    mySIM800.write(26); // End of text content
     updateSerial();
     delay(4000);
+    Serial.println();
     
     // Read the response from the SIM800L
     while (mySIM800.available()) {
@@ -281,149 +283,100 @@ bool sendSMS(String textString){
     // Check the response for success or failure
     if (response.indexOf("+CMGS:") != -1) {
       enviado = true;
-      Serial.println("SMS sent successfully!");
-      return true;
+      Serial.println("SMS enviado correctamente!");
     } else {
-      Serial.println("Failed to send SMS.");
+      Serial.println("Fallo en el envío SMS.");
       // Check if the SIM is registered on the network
       if (!isNetworkRegistered()) {
-        Serial.println("La SIM no está registrada en la red GSM.");
-        forceNetworkRegistration();
-
-        // Retry sending SMS after attempting to register
-        Serial.println("Reintentando SMS...");
-        i++;
+        Serial.println("ERROR: La SIM no está registrada en la red GSM.");
+        // forceNetworkRegistration();                
       }
     }
+    i++;
   }
   return enviado;
 }
 
-void setup() {
-	Serial.begin(9600); //Iniciamos la comunicación  serial
-	SPI.begin();        //Iniciamos el Bus SPI
-	mfrc522.PCD_Init(); // Iniciamos  el MFRC522
-  delay(4);
-
-  //Begin serial communication with Arduino and SIM800
-  mySIM800.begin(9600);
-  Serial.println("Inicializando SIM800...");
-  delay(1000);
-
-  mySIM800.println("AT"); //Once the handshake test is successful, it will back to OK
-  updateSerial();
-  mySIM800.println("AT+CSQ"); //Signal quality test, value range is 0-31 , 31 is the best
-  updateSerial();
-  mySIM800.println("AT+CCID"); //Read SIM information to confirm whether the SIM is plugged
-  updateSerial();
-  // mySIM800.println("AT+CREG?"); //Check whether it has registered in the network
-  // updateSerial();
-  mySIM800.println("AT+CCLK?"); //Check network time
-  updateSerial();
-  isNetworkOK = isNetworkRegistered();
-  if (!isNetworkOK) {
-    Serial.println("ERROR. La SIM no está conectada a la red GSM.");
-    forceNetworkRegistration();
-    isNetworkOK = isNetworkRegistered();
-    if (!isNetworkOK) Serial.println("Continuamos sin GSM.");
-  }
-    
-  pinMode(BUTTON_PIN, INPUT_PULLUP); //Inicializamos el botón
-
-  digitalWrite(GREENPIN, HIGH);
-  digitalWrite(REDPIN, HIGH);
-  delay(500);
-  digitalWrite(GREENPIN, LOW);
-  digitalWrite(REDPIN, LOW);
-
-  lcd.init();  //initialize the lcd
-  lcd.backlight();  //open the backlight
-
-  printLCD(0,0, "Pulse el boton");
-  printLCD(1,0, "para comenzar");
-  delay(200);
-
-  Serial.println("===============================================");
-  Serial.println("Todo listo. Pulse el botón para comenzar el reloj de carrera.");
-}
-
-void loop() {
-
-  // updateSerial();
-  
+void handleButtonPressed(){
   if (digitalRead(BUTTON_PIN) == LOW) {
-    if (!isStartTimeSet) {
+    if (!isStartTimeSet) { //Carrera aún no iniciada
       startTime = millis();
       LastStateChangeTime = startTime;
       isStartTimeSet = true;
 
-      String startString = "Carrera iniciada";
+      String startString = "Carrera INICIADA";
 
       if (isNetworkOK){
         String horaInicio = getNetworktime();
-        startString = startString + " a las " + String(horaInicio) + ".";
+        startString = startString + " a las " + String(horaInicio);
       }
-      Serial.println(startString);
-      if (isNetworkOK) sendSMS(startString);
+      startString = startString + "!";
+      Serial.println(startString);      
       
       // lcd.clear();      
       // printLCD(0, 0, "Carrera iniciada");
+      // printScreen(startString);
+      
+      if (isNetworkOK) sendSMS(startString);      
        
-    } else { // Si se pulsa el botón cuando la carrera está iniciada, enteonces la finalizamos
+    } else { // Si se pulsa el botón cuando la carrera está iniciada, entonces la finalizamos
       unsigned long endTime = millis();
-      String endString = "Carrera finalizada";
+      String endString = "Carrera FINALIZADA";
 
       if (isNetworkOK){
         String horaFin = getNetworktime();
-        endString = endString + " a las " + String(horaFin) + ".";
+        endString = endString + " a las " + String(horaFin);
       }
-      
+      endString = endString + "!";
+
+      Serial.println("===============================================");
       Serial.println(endString);
       String smsText = endString + "\n";
-      String raceInfo = printLaptimeAndTotaltime();
+      String raceInfo = getLaptimeAndTotaltime(false);
       smsText = smsText + raceInfo;
-      if (isNetworkOK) sendSMS(smsText);
-            
+      Serial.println("===============================================");
+      // printScreen(smsText);
+
+      if (isNetworkOK) sendSMS(smsText);      
+
+      //Reset variables for a new race
       isStartTimeSet = false;
       LastStateChangeTime = 0;
       startTime = 0;
       totalDistance = 0;
     }
-    delay(200);  // Debounce delay
+    delay(300);  // Debounce delay
   }
-  
-	// Revisamos si hay nuevas tarjetas  presentes
+}
+
+void handleRFID(){
+  // Revisamos si hay nuevas tarjetas  presentes
 	if ( mfrc522.PICC_IsNewCardPresent() ) 
   {  
-    //Seleccionamos una tarjeta
+    //Comprobamos qué tarjeta es
     if ( mfrc522.PICC_ReadCardSerial()) 
-    {
-      //Encendemos LED rojo para confirmación visual de la lectura
-      digitalWrite(REDPIN, HIGH);
-      delay(500);      
-      digitalWrite(REDPIN, LOW);
-      // Enviamos serialemente su UID
-      // Serial.print("(Card UID:");
-      for (byte i = 0; i < mfrc522.uid.size; i++) {
-        // Serial.print(mfrc522.uid.uidByte[i] < 0x10 ? " 0" : " ");
-        // Serial.print(mfrc522.uid.uidByte[i], HEX);
-        ActualUID[i]=mfrc522.uid.uidByte[i];
-      } 
-      //comparamos los UID para determinar si es uno de nuestros atletas
+    {      
       String resString = "";
-      if(compareArray(ActualUID,Atleta1))
-        resString = "ATLETA 1";
-      else if(compareArray(ActualUID,Atleta2))
-        resString = "ATLETA 2";
-      else
-        resString = "Atleta desc.";
-      
       String sVuelta = "";
       if (!isStartTimeSet){
         resString = "Carrera NO iniciada";
         Serial.println(resString);
         // printLCD(0, 0, resString);
+        // printScreen(resString);
       } else {
+        //comparamos los UID para determinar si es uno de nuestros atletas       
+        // if(compareArray(ActualUID,Atleta1))
+        if (memcmp(mfrc522.uid.uidByte, Atleta1, 4) == 0) 
+          resString = "ATLETA 1";
+        else if(memcmp(mfrc522.uid.uidByte, Atleta2, 4) == 0)
+          resString = "ATLETA 2";
+        else {
+          Serial.println("Atleta desconocido. Lo ignoramos.");
+          // Terminamos la lectura de la tarjeta  actual
+          mfrc522.PICC_HaltA(); 
+          return;
+        }
+
         if (LAP_LENGTH > 0) {
           totalDistance = totalDistance + LAP_LENGTH;
           int n_vuelta = totalDistance / LAP_LENGTH;
@@ -434,24 +387,115 @@ void loop() {
 
         // lcd.clear();
         // printLCD(0, 0, resString);                    
-        Serial.print(resString);
-        
-        // Serial.print(" Vuelta ");
-        // Serial.print(totalDistance / LAP_LENGTH);
-        // Serial.println(":");
-        Serial.print(" - ");
-        Serial.println(sVuelta);
         // printLCD(1, 0, sVuelta);                    
         // delay(2000);
 
-        String smsText = resString + " - " + sVuelta + "\n";
-        String raceInfo = printLaptimeAndTotaltime();
-        smsText = smsText + raceInfo;
+        String smsText = resString + " - " + sVuelta;
+        Serial.println(smsText);
+        String raceInfo = getLaptimeAndTotaltime(true);
+        smsText = smsText + "\n" + raceInfo;
         sendSMS(smsText);
+        // printScreen(smsText);
       }
       
       // Terminamos la lectura de la tarjeta  actual
       mfrc522.PICC_HaltA();         
     }      
-	}	
+	}	  
+}
+
+// void printScreen(String texto) {
+//   const int LINE_HEIGHT = 12;
+//   const int cursor = 0;
+
+//   const char* input = texto.c_str();
+
+//   // Buffer to hold each line (maximum 10 lines of 64 characters each)
+//   char lines[10][64];
+//   int lineCount = 0;
+
+//   // Create a mutable copy of the input string
+//   char temp[strlen(input) + 1];
+//   strcpy(temp, input);
+
+//   // Split the input string by "\n" and store lines
+//   char* token = strtok(temp, "\n");
+//   while (token != nullptr && lineCount < 10) {
+//     strncpy(lines[lineCount], token, 63);
+//     lines[lineCount][63] = '\0';  // Ensure null termination
+//     token = strtok(nullptr, "\n");
+//     lineCount++;
+//   }
+
+//   // Serial.print("--- ");
+//   // Serial.print(String(lineCount));
+//   // Serial.print(" lines found ");
+//   // Serial.println("---");
+  
+//   // Start page-based rendering
+//   u8g2.firstPage();  
+//   do {   
+//     int y = LINE_HEIGHT; 
+//     for (int i = 0; i < lineCount; i++) {
+//       // u8g2_prepare();
+//       u8g2.setFont(u8g2_font_6x10_tf);  // Set font
+//       u8g2.drawUTF8(cursor, y, lines[i]);
+      
+//       y += LINE_HEIGHT;
+//       // Stop if the y-coordinate exceeds the screen height
+//       if (y > u8g2.getDisplayHeight()) {
+//         break;
+//       }
+      
+//     }
+//   } while( u8g2.nextPage() );  
+  
+//   return;  
+// }
+
+// void clearScreen() {
+//   u8g2.firstPage();  // Start the page-based rendering
+//   do {
+//     // Do nothing to draw an empty screen
+//   } while (u8g2.nextPage());  // Continue until all pages are cleared
+// }
+
+void setup() {
+  //Begin serial communication with Arduino and Arduino IDE (Serial Monitor)
+  Serial.begin(9600);
+  Serial.println("---");
+
+  //Begin serial communication between Arduino and SIM800
+  mySIM800.begin(9600);
+  
+  Serial.println("Inicializando SIM800...");
+  delay(1000);
+
+  isNetworkOK = InitializeSIM800();
+  if (!isNetworkOK) Serial.println("Continuamos sin GSM.");
+  else Serial.println("SIM800 Inicializado.");
+
+  // Initialize the OLED display
+  // u8g2.begin();
+  // clearScreen();
+  // Serial.println("Display inicializado.");
+  // delay(1000);
+
+  SPI.begin();        //Iniciamos el Bus SPI
+	mfrc522.PCD_Init(); // Iniciamos  el MFRC522
+  delay(4);
+  Serial.println("RFID inicializado.");
+
+  pinMode(BUTTON_PIN, INPUT_PULLUP); //Inicializamos el botón
+    
+  // printScreen("TODO LISTO\nPulse el botón para\ncomenzar la carrera.");
+  Serial.println("==============================================================");
+  Serial.println("Todo listo. Pulse el botón para comenzar el reloj de carrera.");
+  // clearScreen();
+}
+
+void loop() {
+  handleButtonPressed();
+
+  handleRFID();  
 }
